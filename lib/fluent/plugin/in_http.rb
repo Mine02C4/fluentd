@@ -25,6 +25,7 @@ module Fluent
 
     def initialize
       require 'webrick/httputils'
+      require 'uri'
       super
     end
 
@@ -32,6 +33,8 @@ module Fluent
     config_param :bind, :string, :default => '0.0.0.0'
     config_param :body_size_limit, :size, :default => 32*1024*1024  # TODO default
     config_param :keepalive_timeout, :time, :default => 10   # TODO default
+    config_param :backlog, :integer, :default => nil
+    config_param :add_http_headers, :bool, :default => false
 
     def configure(conf)
       super
@@ -69,14 +72,15 @@ module Fluent
     end
 
     def start
-      $log.debug "listening http on #{@bind}:#{@port}"
+      log.debug "listening http on #{@bind}:#{@port}"
       lsock = TCPServer.new(@bind, @port)
 
       detach_multi_process do
         super
         @km = KeepaliveManager.new(@keepalive_timeout)
         #@lsock = Coolio::TCPServer.new(@bind, @port, Handler, @km, method(:on_request), @body_size_limit)
-        @lsock = Coolio::TCPServer.new(lsock, nil, Handler, @km, method(:on_request), @body_size_limit)
+        @lsock = Coolio::TCPServer.new(lsock, nil, Handler, @km, method(:on_request), @body_size_limit, log)
+        @lsock.listen(@backlog) unless @backlog.nil?
 
         @loop = Coolio::Loop.new
         @loop.attach(@km)
@@ -96,8 +100,8 @@ module Fluent
     def run
       @loop.run
     rescue
-      $log.error "unexpected error", :error=>$!.to_s
-      $log.error_backtrace
+      log.error "unexpected error", :error=>$!.to_s
+      log.error_backtrace
     end
 
     def on_request(path_info, params)
@@ -113,6 +117,19 @@ module Fluent
 
         else
           raise "'json' or 'msgpack' parameter is required"
+        end
+
+        # Skip nil record
+        if record.nil?
+          return ["200 OK", {'Content-type'=>'text/plain'}, ""]
+        end
+        
+        if @add_http_headers
+          params.each_pair { |k,v|
+            if k.start_with?("HTTP_")
+              record[k] = v
+            end
+          }
         end
 
         time = params['time']
@@ -136,18 +153,19 @@ module Fluent
     end
 
     class Handler < Coolio::Socket
-      def initialize(io, km, callback, body_size_limit)
+      def initialize(io, km, callback, body_size_limit, log)
         super(io)
         @km = km
         @callback = callback
         @body_size_limit = body_size_limit
         @content_type = ""
         @next_close = false
+        @log = log
 
         @idle = 0
         @km.add(self)
 
-        @remote_port, @remote_addr = *Socket.unpack_sockaddr_in(io.getpeername)
+        @remote_port, @remote_addr = *Socket.unpack_sockaddr_in(io.getpeername) rescue nil
       end
 
       def step_idle
@@ -166,8 +184,8 @@ module Fluent
         @idle = 0
         @parser << data
       rescue
-        $log.warn "unexpected error", :error=>$!.to_s
-        $log.warn_backtrace
+        @log.warn "unexpected error", :error=>$!.to_s
+        @log.warn_backtrace
         close
       end
 
@@ -227,9 +245,10 @@ module Fluent
       def on_message_complete
         return if closing?
 
-        @env['REMOTE_ADDR'] = @remote_addr
+        @env['REMOTE_ADDR'] = @remote_addr if @remote_addr
 
-        params = WEBrick::HTTPUtils.parse_query(@parser.query_string)
+        uri = URI.parse(@parser.request_url)
+        params = WEBrick::HTTPUtils.parse_query(uri.query)
 
         if @content_type =~ /^application\/x-www-form-urlencoded/
           params.update WEBrick::HTTPUtils.parse_query(@body)
@@ -239,7 +258,7 @@ module Fluent
         elsif @content_type =~ /^application\/json/
           params['json'] = @body
         end
-        path_info = @parser.request_path
+        path_info = uri.path
 
         params.merge!(@env)
         @env.clear

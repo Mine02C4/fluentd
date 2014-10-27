@@ -1,3 +1,99 @@
+Release 0.10.46 - 2014/04/21
+
+* in_tail: Fix typo in rescue for dumping backtrace
+* in_forward: Add blocking_timeout option to avoid Cool.io loop stuck in shutdown
+* out_forward: Add phi_failure_detector option to disable "The Phi accrual failure detector"
+* buf_memory: Add flush_at_shutdown option to discard buffered event at shutdown
+* parser: Use Engine.now when time_key is missing in ValuesParser
+* parser: TextParser loads fluent/plugin/parser_xxx.rb automatically when 'xxx' format not found
+* Fix match cache expiration
+* Add new v1 configuration format and --use-v1-config option to enable v1 configuration format
+* Add config_section to Configurable to support nested parameters in plugins
+* Relax http_parser.rb gem version to support 0.6 series
+
+Release 0.10.45 - 2014/03/28
+
+* in_tail: Merge in_tail_ex and in_tail_multiline features
+* in_forward: Add linger_timeout option
+* out_exec: Support json and msgpack format
+* Engine: Fix signal handling when receives SIGTERM before loop starts
+* Use correct out_forward option in fluent.conf with --setup option
+* Ignore sigdump exception on signal unsupported environment
+
+Release 0.10.44 - 2014/02/26
+
+* in_forward: Print remote address and port in trace log
+* Remove several methods from fluentd-debug to call remote object method directly
+* Add --gemfile option to manage Fluentd and plugins using Gemfile and Bundler
+* Add <include path /> directive to include the configuration file under the elements
+* Add 'ruby' keyword to call Kernel method in configuration DSL
+* Relax Cool.io gem version to allow 1.2.x
+
+Release 0.10.43 - 2014/02/03
+
+* Input/Output: Add 'log_level' option to plugins
+* parser/in_tail: Fix RegexpParser forget to call configure method
+* parser/in_tail: Improve type conversion performance
+* in_http: Add add_http_headers option to add HTTP headers to record
+* Buffer: Improve submit_buffer throughput using round-robin writer selection
+* add sigdump gem to dump useful information via SIGCONT
+
+Release 0.10.42 - 2013/12/25
+
+* parser/in_tail: Add 'types' and related parameters to convert record value type
+* in_syslog: Add 'protocol_type' option for TCP support.
+* Buffer: Extract 'storable?' method for hook judge mechanizm by 3rd-party buffer plugins.
+* Output: Add 'try_flush_interval' parameter for high frequency flush.
+  It is undocumented because almost users never need this feature.
+* Change configuration unused checking to prevent memory leak when a plugin accesses configuratino keys.
+
+Release 0.10.41 - 2013/12/05
+
+* BufferedOutput: Add 'max_retry_wait' to limit retry interval
+* in_exec/object_space/syslog: Improve emit error message
+* Log: Add --suppress-repeated-stacktrace option to prevent log size explosion
+
+Release 0.10.40 - 2013/11/08
+
+* Dump gem version of fluent-plugin-xxx and fluent-mixin-xxx
+* in_http: Doesn't set REMOTE_ADDR when IO#getpeername failed
+* in_tail/parser: Fix RegexpParser which ignores time_format parameter
+* in_exec: Catch error and dumps error message in run_periodic
+* in_forward: Show error class in the error message
+* in_exec/out_exec_filter: Catch more exceptions, not only Errno::ESRCH, at shutdown
+* Log: Catch exception for log event handling at shutdown
+
+Release 0.10.39 - 2013/09/18
+
+* out_file: Improve symlink handling with buf_file
+* out_copy: Add deep_copy parameter for actual record copy
+* in_tail/parser: Add none format for supporting non-parse tailing like fluent-agent-lite
+* in_tail/parser: Improve performance using parsed time caching
+* Engine: Fix signal related exception in trap context at Ruby 2.0
+* buffer: Fix race condition when remove flushed chunk
+* add --suppress-config-dump option to disable dump configuration at start
+
+Release 0.10.38 - 2013/08/29
+
+* Fix require related problem in running test
+
+Release 0.10.37 - 2013/08/29
+
+* in_exec: Add format option to support tsv, json and msgpack. Default is tsv
+* out_stdout: Add output_type to print non-jsonable object
+* Engine: Skip nil record in emit
+* Check buffere_path duplication across buffer configurations.
+* Add experimental DSL to configuration format
+
+Release 0.10.36 - 2013/07/31
+
+* Log: add class name on each error logs
+* out_foward: change log level of node detachment/recovering/standby-failover from info to warn
+* out_file: add symlink_path parameter to point to latest written file
+* in_forward, in_http, in_unix: add backlog parameter to change resource backlog size
+* add --dry-run option to check fluentd setup without actual run
+* Fluentd now assumes configuration file written in UTF-8
+* update cool.io version to 1.1.1
 
 Release 0.10.35 - 2013/06/12
 

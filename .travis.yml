@@ -1,13 +1,24 @@
 language: ruby
 
 rvm:
-  - 1.9.2
   - 1.9.3
   - 2.0.0
-  - rbx-19mode
+  - 2.1.0
+  - 2.1.1
+  - ruby-head
+  - rbx
 
 branches:
   only:
     - master
 
-script: bundle exec rake test
+gemfile:
+  - Gemfile
+  - Gemfile.cool.io.1.1.1
+
+script: bundle exec rake
+
+matrix:
+  allow_failures:
+    - rvm: ruby-head
+    - rvm: rbx

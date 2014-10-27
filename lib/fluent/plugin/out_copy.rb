@@ -19,13 +19,17 @@ module Fluent
   class CopyOutput < MultiOutput
     Plugin.register_output('copy', self)
 
+    config_param :deep_copy, :bool, :default => false
+
     def initialize
+      super
       @outputs = []
     end
 
     attr_reader :outputs
 
     def configure(conf)
+      super
       conf.elements.select {|e|
         e.name == 'store'
       }.each {|e|
@@ -33,7 +37,7 @@ module Fluent
         unless type
           raise ConfigError, "Missing 'type' parameter on <store> directive"
         end
-        $log.debug "adding store type=#{type.dump}"
+        log.debug "adding store type=#{type.dump}"
 
         output = Plugin.new_output(type)
         output.configure(e)
@@ -61,7 +65,11 @@ module Fluent
         }
         es = m
       end
-      chain = OutputChain.new(@outputs, tag, es, chain)
+      if @deep_copy
+        chain = CopyOutputChain.new(@outputs, tag, es, chain)
+      else
+        chain = OutputChain.new(@outputs, tag, es, chain)
+      end
       chain.next
     end
   end

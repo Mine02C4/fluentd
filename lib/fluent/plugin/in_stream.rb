@@ -45,8 +45,8 @@ module Fluent
     def run
       @loop.run
     rescue
-      $log.error "unexpected error", :error=>$!.to_s
-      $log.error_backtrace
+      log.error "unexpected error", :error=>$!.to_s
+      log.error_backtrace
     end
 
     protected
@@ -84,31 +84,38 @@ module Fluent
         # Forward
         es = MultiEventStream.new
         entries.each {|e|
+          record = e[1]
+          next if record.nil?
           time = e[0].to_i
           time = (now ||= Engine.now) if time == 0
-          record = e[1]
           es.add(time, record)
         }
         Engine.emit_stream(tag, es)
 
       else
         # Message
+        record = msg[2]
+        return if record.nil?
+
         time = msg[1]
         time = Engine.now if time == 0
-        record = msg[2]
         Engine.emit(tag, time, record)
       end
     end
 
     class Handler < Coolio::Socket
-      def initialize(io, on_message)
+      def initialize(io, log, on_message)
         super(io)
         if io.is_a?(TCPSocket)
           opt = [1, @timeout.to_i].pack('I!I!')  # { int l_onoff; int l_linger; }
           io.setsockopt(Socket::SOL_SOCKET, Socket::SO_LINGER, opt)
         end
-        $log.trace { "accepted fluent socket object_id=#{self.object_id}" }
         @on_message = on_message
+        @log = log
+        @log.trace {
+          remote_port, remote_addr = *Socket.unpack_sockaddr_in(@_io.getpeername) rescue nil
+          "accepted fluent socket from '#{remote_addr}:#{remote_port}': object_id=#{self.object_id}"
+        }
       end
 
       def on_connect
@@ -134,21 +141,21 @@ module Fluent
       def on_read_json(data)
         @y << data
       rescue
-        $log.error "unexpected error", :error=>$!.to_s
-        $log.error_backtrace
+        @log.error "unexpected error", :error=>$!.to_s
+        @log.error_backtrace
         close
       end
 
       def on_read_msgpack(data)
         @u.feed_each(data, &@on_message)
       rescue
-        $log.error "unexpected error", :error=>$!.to_s
-        $log.error_backtrace
+        @log.error "unexpected error", :error=>$!.to_s
+        @log.error_backtrace
         close
       end
 
       def on_close
-        $log.trace { "closed fluent socket object_id=#{self.object_id}" }
+        @log.trace { "closed fluent socket object_id=#{self.object_id}" }
       end
     end
   end
@@ -167,7 +174,7 @@ module Fluent
   #  end
   #
   #  def listen
-  #    $log.debug "listening fluent socket on #{@bind}:#{@port}"
+  #    log.debug "listening fluent socket on #{@bind}:#{@port}"
   #    Coolio::TCPServer.new(@bind, @port, Handler, method(:on_message))
   #  end
   #end
@@ -185,10 +192,11 @@ module Fluent
     Plugin.register_input('unix', self)
 
     config_param :path, :string, :default => DEFAULT_SOCKET_PATH
+    config_param :backlog, :integer, :default => nil
 
     def configure(conf)
       super
-      #$log.warn "'unix' input is obsoleted and will be removed. Use 'forward' instead."
+      #log.warn "'unix' input is obsoleted and will be removed. Use 'forward' instead."
     end
 
     def listen
@@ -196,8 +204,10 @@ module Fluent
         File.unlink(@path)
       end
       FileUtils.mkdir_p File.dirname(@path)
-      $log.debug "listening fluent socket on #{@path}"
-      Coolio::UNIXServer.new(@path, Handler, method(:on_message))
+      log.debug "listening fluent socket on #{@path}"
+      s = Coolio::UNIXServer.new(@path, Handler, log, method(:on_message))
+      s.listen(@backlog) unless @backlog.nil?
+      s
     end
   end
 end

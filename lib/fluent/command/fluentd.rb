@@ -38,7 +38,11 @@ opts = {
   :chuser => nil,
   :chgroup => nil,
   :suppress_interval => 0,
+  :suppress_repeated_stacktrace => false,
+  :use_v1_config => false,
   :usespawn => 0,
+  :signame => nil,
+  :winsvcreg => nil,
 }
 
 op.on('-s', "--setup [DIR=#{File.dirname(Fluent::DEFAULT_CONFIG_PATH)}]", "install sample configuration file to the directory") {|s|
@@ -89,6 +93,14 @@ op.on('--emit-error-log-interval SECONDS', "suppress interval seconds of emit er
   opts[:suppress_interval] = s.to_i
 }
 
+op.on('--suppress-repeated-stacktrace', "suppress repeated stacktrace", TrueClass) {|b|
+  opts[:suppress_repeated_stacktrace] = b
+}
+
+op.on('--use-v1-config', "Use v1 configuration format", TrueClass) {|b|
+  opts[:use_v1_config] = b
+}
+
 op.on('-v', '--verbose', "increase verbose level (-v: debug, -vv: trace)", TrueClass) {|b|
   if b
     opts[:log_level] = [opts[:log_level] - 1, Fluent::Log::LEVEL_TRACE].max
@@ -101,8 +113,28 @@ op.on('-q', '--quiet', "decrease verbose level (-q: warn, -qq: error)", TrueClas
   end
 }
 
+op.on('--suppress-config-dump', "suppress config dumping when fluentd starts", TrueClass) {|b|
+  opts[:suppress_config_dump] = b
+}
+
+op.on('-g', '--gemfile GEMFILE', "Gemfile path") {|s|
+  opts[:gemfile] = s
+}
+
+op.on('-G', '--gem-path GEM_INSTALL_PATH', "Gemfile install path (default: $(dirname $gemfile)/vendor/bundle)") {|s|
+  opts[:gem_install_path] = s
+}
+
 op.on('-u', '--usespwan', "*** internal use only *** use spawn instead of fork (Windows only)", TrueClass) {|b|
   opts[:usespawn] = 1
+}
+
+op.on('-x', '--signame INTSIGNAME', "an object name which is used for Windows Service signal (Windows only)") {|s|
+  opts[:signame] = s
+}
+
+op.on('-w', '--winsvcinst MODE', "install/uninstall as Windows Service. (i: install, u: uninstall) (Windows only)") {|s|
+  opts[:winsvcreg] = s
 }
 
 (class<<self;self;end).module_eval do
@@ -114,15 +146,29 @@ op.on('-u', '--usespwan', "*** internal use only *** use spawn instead of fork (
 end
 
 begin
-  op.parse!(ARGV)
+  rest = op.parse(ARGV)
 
-  if ARGV.length != 0
+  if rest.length != 0
     usage nil
   end
 rescue
   usage $!.to_s
 end
 
+
+##
+## Bundler injection
+#
+if ENV['FLUENTD_DISABLE_BUNDLER_INJECTION'] != '1' && gemfile = opts[:gemfile]
+  ENV['BUNDLE_GEMFILE'] = gemfile
+  if path = opts[:gem_install_path]
+    ENV['BUNDLE_PATH'] = path
+  else
+    ENV['BUNDLE_PATH'] = File.expand_path(File.join(File.dirname(gemfile), 'vendor/bundle'))
+  end
+  ENV['FLUENTD_DISABLE_BUNDLER_INJECTION'] = '1'
+  load File.expand_path(File.join(File.dirname(__FILE__), 'bundler_injection.rb'))
+end
 
 if setup_path = opts[:setup_path]
   require 'fileutils'
@@ -137,6 +183,41 @@ if setup_path = opts[:setup_path]
     }
     puts "Installed #{confpath}."
   end
+  exit 0
+end
+
+if winsvcinstmode = opts[:winsvcreg]
+  require 'fileutils'
+  require "win32/service"
+  require 'fluent/win32api_syncobj'
+  include Win32
+  
+  FLUENTD_WINSVC_NAME="fluentdsvc"
+  FLUENTD_WINSVC_DISPLAYNAME="Fluentd Windows Service"
+  FLUENTD_WINSVC_DESC="Fluentd is an event collector system."
+  
+  case winsvcinstmode
+  when 'i'
+    binary_path = File.join(File.dirname(__FILE__), "..")
+    ruby_path = Fluent::Win32Dll.getmodulefilename
+    
+    Service.create(
+      :service_name => FLUENTD_WINSVC_NAME, 
+      :host => nil,
+      :service_type => Service::WIN32_OWN_PROCESS,
+      :description => FLUENTD_WINSVC_DESC,
+      :start_type => Service::DEMAND_START,
+      :error_control => Service::ERROR_NORMAL,
+      :binary_path_name => rub_path+" -C "+binary_path+" winsvc.rb",
+      :load_order_group => "",
+      :dependencies => [""],
+      :display_name => FLUENTD_WINSVC_DISPLAYNAME
+    )
+  when 'u'
+    Service.delete(FLUENTD_WINSVC_NAME)
+  else
+    # none
+  end 
   exit 0
 end
 

@@ -15,6 +15,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 #
+
+require 'fluent/plugin/exec_util'
+
 module Fluent
   class ExecFilterOutput < BufferedOutput
     Plugin.register_output('exec_filter', self)
@@ -23,19 +26,13 @@ module Fluent
       super
     end
 
-    SUPPORTED_FORMAT = {
-      'tsv' => :tsv,
-      'json' => :json,
-      'msgpack' => :msgpack,
-    }
-
     config_param :command, :string
 
     config_param :remove_prefix, :string, :default => nil
     config_param :add_prefix, :string, :default => nil
 
     config_param :in_format, :default => :tsv do |val|
-      f = SUPPORTED_FORMAT[val]
+      f = ExecUtil::SUPPORTED_FORMAT[val]
       raise ConfigError, "Unsupported in_format '#{val}'" unless f
       f
     end
@@ -47,7 +44,7 @@ module Fluent
     config_param :in_time_format, :default => nil
 
     config_param :out_format, :default => :tsv do |val|
-      f = SUPPORTED_FORMAT[val]
+      f = ExecUtil::SUPPORTED_FORMAT[val]
       raise ConfigError, "Unsupported out_format '#{val}'" unless f
       f
     end
@@ -113,7 +110,7 @@ module Fluent
           @time_format_proc = Proc.new {|time| time.to_s }
         end
       elsif @in_time_format
-        $log.warn "in_time_format effects nothing when in_time_key is not specified: #{conf}"
+        log.warn "in_time_format effects nothing when in_time_key is not specified: #{conf}"
       end
 
       if @out_time_key
@@ -123,7 +120,7 @@ module Fluent
           @time_parse_proc = Proc.new {|str| str.to_i }
         end
       elsif @out_time_format
-        $log.warn "out_time_format effects nothing when out_time_key is not specified: #{conf}"
+        log.warn "out_time_format effects nothing when out_time_key is not specified: #{conf}"
       end
 
       if @remove_prefix
@@ -139,11 +136,11 @@ module Fluent
         if @in_keys.empty?
           raise ConfigError, "in_keys option is required on exec_filter output for tsv in_format"
         end
-        @formatter = TSVFormatter.new(@in_keys)
+        @formatter = ExecUtil::TSVFormatter.new(@in_keys)
       when :json
-        @formatter = JSONFormatter.new
+        @formatter = ExecUtil::JSONFormatter.new
       when :msgpack
-        @formatter = MessagePackFormatter.new
+        @formatter = ExecUtil::MessagePackFormatter.new
       end
 
       case @out_format
@@ -151,11 +148,11 @@ module Fluent
         if @out_keys.empty?
           raise ConfigError, "out_keys option is required on exec_filter output for tsv in_format"
         end
-        @parser = TSVParser.new(@out_keys, method(:on_message))
+        @parser = ExecUtil::TSVParser.new(@out_keys, method(:on_message))
       when :json
-        @parser = JSONParser.new(method(:on_message))
+        @parser = ExecUtil::JSONParser.new(method(:on_message))
       when :msgpack
-        @parser = MessagePackParser.new(method(:on_message))
+        @parser = ExecUtil::MessagePackParser.new(method(:on_message))
       end
 
       @respawns = if @child_respawn.nil? or @child_respawn == 'none' or @child_respawn == '0'
@@ -179,7 +176,7 @@ module Fluent
       @rr = 0
       begin
         @num_children.times do
-          c = ChildProcess.new(@parser, @respawns)
+          c = ChildProcess.new(@parser, @respawns, log)
           c.start(@command)
           @children << c
         end
@@ -191,7 +188,7 @@ module Fluent
 
     def before_shutdown
       super
-      $log.debug "out_exec_filter#before_shutdown called"
+      log.debug "out_exec_filter#before_shutdown called"
       @children.each {|c|
         c.finished = true
       }
@@ -237,13 +234,14 @@ module Fluent
     class ChildProcess
       attr_accessor :finished
 
-      def initialize(parser,respawns=0)
+      def initialize(parser, respawns=0, log = $log)
         @pid = nil
         @thread = nil
         @parser = parser
         @respawns = respawns
         @mutex = Mutex.new
         @finished = nil
+        @log = log
       end
 
       def start(command)
@@ -260,7 +258,7 @@ module Fluent
       def kill_child(join_wait)
         begin
           Process.kill(:TERM, @pid)
-        rescue Errno::ESRCH
+        rescue #Errno::ECHILD, Errno::ESRCH, Errno::EPERM
           # Errno::ESRCH 'No such process', ignore
           # child process killed by signal chained from fluentd process
         end
@@ -270,7 +268,7 @@ module Fluent
         end
         begin
           Process.kill(:KILL, @pid)
-        rescue Errno::ESRCH
+        rescue #Errno::ECHILD, Errno::ESRCH, Errno::EPERM
           # ignore if successfully killed by :TERM
         end
         @thread.join
@@ -288,7 +286,7 @@ module Fluent
           chunk.write_to(@io)
         rescue Errno::EPIPE => e
           # Broken pipe (child process unexpectedly exited)
-          $log.warn "exec_filter Broken pipe, child process maybe exited.", :command => @command
+          @log.warn "exec_filter Broken pipe, child process maybe exited.", :command => @command
           if try_respawn
             retry # retry chunk#write_to with child respawned
           else
@@ -311,55 +309,23 @@ module Fluent
 
           @respawns -= 1 if @respawns > 0
         end
-        $log.warn "exec_filter child process successfully respawned.", :command => @command, :respawns => @respawns
+        @log.warn "exec_filter child process successfully respawned.", :command => @command, :respawns => @respawns
         true
       end
 
       def run
         @parser.call(@io)
       rescue
-        $log.error "exec_filter thread unexpectedly failed with an error.", :command=>@command, :error=>$!.to_s
-        $log.warn_backtrace $!.backtrace
+        @log.error "exec_filter thread unexpectedly failed with an error.", :command=>@command, :error=>$!.to_s
+        @log.warn_backtrace $!.backtrace
       ensure
         pid, stat = Process.waitpid2(@pid)
         unless @finished
-          $log.error "exec_filter process unexpectedly exited.", :command=>@command, :ecode=>stat.to_i
+          @log.error "exec_filter process unexpectedly exited.", :command=>@command, :ecode=>stat.to_i
           unless @respawns == 0
-            $log.warn "exec_filter child process will respawn for next input data (respawns #{@respawns})."
+            @log.warn "exec_filter child process will respawn for next input data (respawns #{@respawns})."
           end
         end
-      end
-    end
-
-    class Formatter
-    end
-
-    class TSVFormatter < Formatter
-      def initialize(in_keys)
-        @in_keys = in_keys
-        super()
-      end
-
-      def call(record, out)
-        last = @in_keys.length-1
-        for i in 0..last
-          key = @in_keys[i]
-          out << record[key].to_s
-          out << "\t" if i != last
-        end
-        out << "\n"
-      end
-    end
-
-    class JSONFormatter < Formatter
-      def call(record, out)
-        out << Yajl.dump(record) << "\n"
-      end
-    end
-
-    class MessagePackFormatter < Formatter
-      def call(record, out)
-        record.to_msgpack(out)
       end
     end
 
@@ -384,53 +350,9 @@ module Fluent
 
     rescue
       if @suppress_error_log_interval == 0 || Time.now.to_i > @next_log_time
-        $log.error "exec_filter failed to emit", :error=>$!.to_s, :error_class=>$!.class.to_s, :record=>Yajl.dump(record)
-        $log.warn_backtrace $!.backtrace
+        log.error "exec_filter failed to emit", :error=>$!.to_s, :error_class=>$!.class.to_s, :record=>Yajl.dump(record)
+        log.warn_backtrace $!.backtrace
         @next_log_time = Time.now.to_i + @suppress_error_log_interval
-      end
-    end
-
-    class Parser
-      def initialize(on_message)
-        @on_message = on_message
-      end
-    end
-
-    class TSVParser < Parser
-      def initialize(out_keys, on_message)
-        @out_keys = out_keys
-        super(on_message)
-      end
-
-      def call(io)
-        io.each_line(&method(:each_line))
-      end
-
-      def each_line(line)
-        line.chomp!
-        vals = line.split("\t")
-
-        record = Hash[@out_keys.zip(vals)]
-
-        @on_message.call(record)
-      end
-    end
-
-    class JSONParser < Parser
-      def call(io)
-        y = Yajl::Parser.new
-        y.on_parse_complete = @on_message
-        y.parse(io)
-      end
-    end
-
-    class MessagePackParser < Parser
-      def call(io)
-        @u = MessagePack::Unpacker.new(io)
-        begin
-          @u.each(&@on_message)
-        rescue EOFError
-        end
       end
     end
   end
